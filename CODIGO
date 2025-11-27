@@ -1,1 +1,303 @@
+# Mejora 1: Importar bibliotecas adicionales útiles
+import tensorflow as tf
+from tensorflow.keras import layers, models, optimizers, callbacks
+from tensorflow.keras.applications import EfficientNetB0
+import tensorflow_datasets as tfds
+import matplotlib.pyplot as plt
+import numpy as np
+import os
+from sklearn.metrics import classification_report, confusion_matrix
+import seaborn as sns
 
+# Mejora 2: Configuración de reproducibilidad
+tf.random.set_seed(42)
+np.random.seed(42)
+
+# Mejora 3: Cargar datos con manejo de errores
+try:
+    (ds_train, ds_val), ds_info = tfds.load(
+        'cats_vs_dogs',
+        split=['train[:80%]', 'train[80%:]'],
+        as_supervised=True,
+        with_info=True,
+        shuffle_files=True  # Mejorar aleatorización
+    )
+except Exception as e:
+    print(f"Error cargando dataset: {e}")
+    # Alternativa: usar datos locales si están disponibles
+    # (ds_train, ds_val), ds_info = tfds.load(... data_dir='path/to/data')
+
+# Mejora 4: Parámetros configurables
+IMG_SIZE = 224  # Aumentar tamaño para mejor rendimiento (opcional)
+BATCH_SIZE = 32
+AUTOTUNE = tf.data.AUTOTUNE
+EPOCHS = 15
+
+# Mejora 5: Preprocesamiento mejorado con data augmentation
+def augment_image(image, label):
+    """Data augmentation para mejorar generalización"""
+    # Volteo horizontal aleatorio
+    image = tf.image.random_flip_left_right(image)
+    # Rotación aleatoria
+    image = tf.image.rot90(image, k=tf.random.uniform(shape=[], minval=0, maxval=4, dtype=tf.int32))
+    # Ajuste de brillo y contraste
+    image = tf.image.random_brightness(image, max_delta=0.1)
+    image = tf.image.random_contrast(image, lower=0.9, upper=1.1)
+    return image, label
+
+def preprocess(image, label, augment=False):
+    """Preprocesamiento con opción de aumento de datos"""
+    image = tf.image.resize(image, (IMG_SIZE, IMG_SIZE))
+    image = tf.cast(image, tf.float32) / 255.0  # Más explícito en el tipo de dato
+    
+    if augment:
+        image, label = augment_image(image, label)
+    
+    return image, label
+
+# Mejora 6: Pipeline de datos más robusto
+def create_data_pipeline(dataset, batch_size=32, augment=False, shuffle=False):
+    """Crea pipeline de datos optimizado"""
+    pipeline = dataset.map(
+        lambda x, y: preprocess(x, y, augment=augment),
+        num_parallel_calls=AUTOTUNE
+    )
+    
+    if shuffle:
+        pipeline = pipeline.shuffle(buffer_size=1000)
+    
+    pipeline = pipeline.batch(batch_size)
+    pipeline = pipeline.prefetch(AUTOTUNE)
+    
+    return pipeline
+
+# Aplicar pipelines
+ds_train_processed = create_data_pipeline(ds_train, BATCH_SIZE, augment=True, shuffle=True)
+ds_val_processed = create_data_pipeline(ds_val, BATCH_SIZE, augment=False, shuffle=False)
+
+# Mejora 7: Función de visualización mejorada
+def show_batch(dataset, batch_size=9, figsize=(12, 12)):
+    """Muestra un batch de imágenes con mejor formato"""
+    plt.figure(figsize=figsize)
+    
+    # Tomar un batch
+    for images, labels in dataset.take(1):
+        for i in range(min(batch_size, len(images))):
+            ax = plt.subplot(3, 3, i + 1)
+            # Asegurar que la imagen esté en formato correcto para matplotlib
+            if images[i].shape[-1] == 3:  # RGB
+                plt.imshow(images[i])
+            else:  # Escala de grises
+                plt.imshow(images[i], cmap='gray')
+            
+            plt.title("Perro" if labels[i] == 1 else "Gato")
+            plt.axis("off")
+    
+    plt.tight_layout()
+    plt.show()
+
+# Mejora 8: Modelo mejorado
+def create_improved_model(input_shape=(IMG_SIZE, IMG_SIZE, 3)):
+    """Crea un modelo CNN mejorado"""
+    model = models.Sequential([
+        # Capa de entrada
+        layers.Input(shape=input_shape),
+        
+        # Bloque convolucional 1
+        layers.Conv2D(32, (3, 3), activation='relu', padding='same'),
+        layers.BatchNormalization(),
+        layers.Conv2D(32, (3, 3), activation='relu', padding='same'),
+        layers.BatchNormalization(),
+        layers.MaxPooling2D(2, 2),
+        layers.Dropout(0.25),
+        
+        # Bloque convolucional 2
+        layers.Conv2D(64, (3, 3), activation='relu', padding='same'),
+        layers.BatchNormalization(),
+        layers.Conv2D(64, (3, 3), activation='relu', padding='same'),
+        layers.BatchNormalization(),
+        layers.MaxPooling2D(2, 2),
+        layers.Dropout(0.25),
+        
+        # Bloque convolucional 3
+        layers.Conv2D(128, (3, 3), activation='relu', padding='same'),
+        layers.BatchNormalization(),
+        layers.Conv2D(128, (3, 3), activation='relu', padding='same'),
+        layers.BatchNormalization(),
+        layers.MaxPooling2D(2, 2),
+        layers.Dropout(0.25),
+        
+        # Capas fully connected
+        layers.Flatten(),
+        layers.Dense(512, activation='relu'),
+        layers.BatchNormalization(),
+        layers.Dropout(0.5),
+        layers.Dense(256, activation='relu'),
+        layers.Dropout(0.3),
+        layers.Dense(1, activation='sigmoid')  # Binary classification
+    ])
+    
+    return model
+
+# Mejora 9: Callbacks para mejor entrenamiento
+def create_callbacks():
+    """Crea callbacks para el entrenamiento"""
+    return [
+        callbacks.EarlyStopping(
+            monitor='val_loss',
+            patience=5,
+            restore_best_weights=True,
+            verbose=1
+        ),
+        callbacks.ReduceLROnPlateau(
+            monitor='val_loss',
+            factor=0.2,
+            patience=3,
+            min_lr=1e-7,
+            verbose=1
+        ),
+        callbacks.ModelCheckpoint(
+            'best_model.h5',
+            monitor='val_accuracy',
+            save_best_only=True,
+            verbose=1
+        )
+    ]
+
+# Mejora 10: Compilación y entrenamiento mejorado
+def compile_and_train_model(model, train_data, val_data, epochs=EPOCHS):
+    """Compila y entrena el modelo con configuración optimizada"""
+    
+    # Compilar modelo
+    model.compile(
+        optimizer=optimizers.Adam(learning_rate=0.001),
+        loss='binary_crossentropy',
+        metrics=['accuracy', 'precision', 'recall']
+    )
+    
+    # Mostrar resumen del modelo
+    model.summary()
+    
+    # Callbacks
+    callbacks_list = create_callbacks()
+    
+    # Entrenar modelo
+    history = model.fit(
+        train_data,
+        epochs=epochs,
+        validation_data=val_data,
+        callbacks=callbacks_list,
+        verbose=1
+    )
+    
+    return history, model
+
+# Mejora 11: Función para evaluación completa
+def evaluate_model(model, test_data, ds_info):
+    """Evaluación completa del modelo"""
+    # Evaluación básica
+    test_loss, test_accuracy, test_precision, test_recall = model.evaluate(test_data, verbose=0)
+    
+    print(f"\n--- EVALUACIÓN DEL MODELO ---")
+    print(f"Pérdida: {test_loss:.4f}")
+    print(f"Exactitud: {test_accuracy:.4f}")
+    print(f"Precisión: {test_precision:.4f}")
+    print(f"Recall: {test_recall:.4f}")
+    
+    # Predicciones para métricas adicionales
+    y_true = []
+    y_pred = []
+    
+    for images, labels in test_data.take(10):  # Tomar solo algunos batches para no sobrecargar
+        predictions = model.predict(images, verbose=0)
+        y_true.extend(labels.numpy())
+        y_pred.extend((predictions > 0.5).astype(int).flatten())
+    
+    # Reporte de clasificación
+    print("\n--- REPORTE DE CLASIFICACIÓN ---")
+    print(classification_report(y_true, y_pred, target_names=['Gato', 'Perro']))
+    
+    # Matriz de confusión
+    cm = confusion_matrix(y_true, y_pred)
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+                xticklabels=['Gato', 'Perro'], 
+                yticklabels=['Gato', 'Perro'])
+    plt.title('Matriz de Confusión')
+    plt.ylabel('Etiqueta Real')
+    plt.xlabel('Predicción')
+    plt.show()
+
+# Mejora 12: Función para visualizar historial de entrenamiento
+def plot_training_history(history):
+    """Visualiza el historial de entrenamiento"""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+    
+    # Pérdida
+    ax1.plot(history.history['loss'], label='Entrenamiento')
+    ax1.plot(history.history['val_loss'], label='Validación')
+    ax1.set_title('Pérdida durante el entrenamiento')
+    ax1.set_xlabel('Época')
+    ax1.set_ylabel('Pérdida')
+    ax1.legend()
+    
+    # Exactitud
+    ax2.plot(history.history['accuracy'], label='Entrenamiento')
+    ax2.plot(history.history['val_accuracy'], label='Validación')
+    ax2.set_title('Exactitud durante el entrenamiento')
+    ax2.set_xlabel('Época')
+    ax2.set_ylabel('Exactitud')
+    ax2.legend()
+    
+    plt.tight_layout()
+    plt.show()
+
+# Mejora 13: Ejemplo de uso con Transfer Learning (opcional)
+def create_transfer_learning_model(input_shape=(IMG_SIZE, IMG_SIZE, 3)):
+    """Modelo con transfer learning usando EfficientNet"""
+    base_model = EfficientNetB0(
+        weights='imagenet',
+        include_top=False,
+        input_shape=input_shape
+    )
+    
+    # Congelar capas base
+    base_model.trainable = False
+    
+    model = models.Sequential([
+        base_model,
+        layers.GlobalAveragePooling2D(),
+        layers.Dense(128, activation='relu'),
+        layers.BatchNormalization(),
+        layers.Dropout(0.3),
+        layers.Dense(1, activation='sigmoid')
+    ])
+    
+    return model
+
+# USO DEL CÓDIGO MEJORADO
+if __name__ == "__main__":
+    # 1. Visualizar datos
+    print("Visualizando batch de entrenamiento...")
+    show_batch(ds_train_processed)
+    
+    # 2. Crear y entrenar modelo
+    print("\nCreando modelo...")
+    model = create_improved_model()
+    
+    print("\nEntrenando modelo...")
+    history, trained_model = compile_and_train_model(
+        model, 
+        ds_train_processed, 
+        ds_val_processed
+    )
+    
+    # 3. Visualizar historial
+    plot_training_history(history)
+    
+    # 4. Evaluar modelo
+    evaluate_model(trained_model, ds_val_processed, ds_info)
+    
+    # 5. Guardar modelo final
+    trained_model.save('cats_vs_dogs_final_model.h5')
+    print("Modelo guardado como 'cats_vs_dogs_final_model.h5'")
